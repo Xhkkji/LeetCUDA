@@ -16,9 +16,16 @@
 ## 测试
 
 ```bash
-# 只测试Ada架构 不指定默认编译所有架构 耗时较长: Volta, Ampere, Ada, Hopper, ...
-export TORCH_CUDA_ARCH_LIST=Ada
-python3 elementwise.py
+# 本机 A40（sm_86）：使用仓库内的局部编译配置，不修改系统 CUDA/GCC
+conda activate pytorch
+./run.sh
+```
+
+`run.sh` 仅为当前进程指定已有的 GCC 9 和 `TORCH_CUDA_ARCH_LIST=8.6`，
+不会修改系统编译器、CUDA 链接或 Conda 环境。若机器配置不同，也可以临时覆盖：
+
+```bash
+CC=/path/to/gcc CXX=/path/to/g++ TORCH_CUDA_ARCH_LIST=8.6 ./run.sh
 ```
 
 输出:
