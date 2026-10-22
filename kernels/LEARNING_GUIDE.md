@@ -1,4 +1,4 @@
-# Elementwise 算子学习与练习指南
+# CUDA 算子学习与练习指南
 
 这份指南面向第一次接触 CUDA 算子的学习者。目标不是一次读懂本目录里的全部优化代码，而是从最简单的 FP32 逐元素加法开始，建立下面这条完整链路：
 
@@ -11,6 +11,17 @@
   → 比较性能
   → 尝试向量化和低精度优化
 ```
+
+## 当前学习进度
+
+| 算子 | 状态 | 已完成内容 |
+|---|---|---|
+| Elementwise Add | 已完成 | FP32、FP32x4、FP16、FP16x2、FP16x8、FP16x8 pack |
+| ReLU | 已完成 | 六个 TODO、边界正确性测试和性能测试 |
+| Sigmoid | 已完成 | 六个 TODO、指数范围处理、`half2` 运算、128-bit pack 和全部边界测试 |
+| Swish | 进行中 | 已创建练习文件，下一步从 TODO 1 开始 |
+
+最近一次进度更新：2026-10-19。Sigmoid 的六个实现已经实际运行并全部输出 `PASS`，当前练习目标切换为 Swish。
 
 ## 1. 这个目录是什么
 
@@ -439,16 +450,153 @@ identifier "__builtin_dynamic_object_size" is undefined
 
 ## 12. 第一阶段完成标准
 
-满足以下项目后，可以继续学习 ReLU、Sigmoid 或 Reduce：
+以下第一阶段项目已经完成：
 
-- [ ] 能解释 `blockIdx.x`、`blockDim.x`、`threadIdx.x`。
-- [ ] 能独立写出 FP32 elementwise add kernel。
-- [ ] 能正确计算 grid size。
-- [ ] 能解释并验证边界判断。
-- [ ] 能从 Python 调用自己的 CUDA kernel。
-- [ ] 能使用 `torch.testing.assert_close` 验证结果。
-- [ ] 能测试 `N=1、5、256、257` 等边界尺寸。
-- [ ] 能解释 FP32x4 向量化的基本思路。
-- [ ] 能正确预热、同步并测量 GPU kernel。
+- [x] 能解释 `blockIdx.x`、`blockDim.x`、`threadIdx.x`。
+- [x] 能独立写出 FP32 elementwise add kernel。
+- [x] 能正确计算 grid size。
+- [x] 能解释并验证边界判断。
+- [x] 能从 Python 调用自己的 CUDA kernel。
+- [x] 能使用 `torch.testing.assert_close` 验证结果。
+- [x] 能测试 `N=1、5、256、257` 等边界尺寸。
+- [x] 能解释 FP32x4 向量化的基本思路。
+- [x] 能正确预热、同步并测量 GPU kernel。
 
-建议今天先只完成前三项练习：线程编号、FP32 基础实现和严格正确性验证。完成后再进入向量化，不必急着阅读所有 FP16 优化代码。
+第一阶段已经结束，当前进入逐元素融合算子 Swish 的练习。
+
+## 13. 后续算子学习路线
+
+Elementwise Add、ReLU 和 Sigmoid 已完成。当前题目是 `kernels/swish/`，暂时不要直接进入 FlashAttention。
+
+### 13.1 已完成：Sigmoid
+
+Sigmoid 与 ReLU 的练习结构基本一致，也包含以下六种实现：
+
+```text
+sigmoid_f32
+sigmoid_f32x4
+sigmoid_f16
+sigmoid_f16x2
+sigmoid_f16x8
+sigmoid_f16x8_pack
+```
+
+因此可以继续巩固：
+
+- 全局线程索引与边界判断；
+- `float4` 向量化；
+- `half` 和 `half2`；
+- 一个线程处理 2、4 或 8 个元素；
+- 128-bit 加载与存储；
+- 输入长度不能被向量宽度整除时的尾部处理。
+
+Sigmoid 的数学定义为：
+
+```text
+sigmoid(x) = 1 / (1 + exp(-x))
+```
+
+它会在 ReLU 的基础上增加以下知识点：
+
+- FP32 的 `expf` 与 FP16 的 `hexp`；
+- FP32、FP16 和 `half2` 常量的正确构造；
+- 使用 `fminf`、`fmaxf`、`__hmin` 和 `__hmax` 限制指数输入；
+- 指数溢出、下溢和数值稳定性；
+- `--use_fast_math` 对计算精度与性能的影响；
+- ReLU 这种访存密集型算子与 Sigmoid 这种计算量更高的逐元素算子的区别。
+
+练习时仍然按照下面的顺序逐项完成和验证：
+
+```text
+FP32 标量
+  → FP32x4
+  → FP16 标量
+  → FP16x2
+  → FP16x8
+  → FP16x8 pack
+```
+
+每完成一项，都应先运行该项的全部边界尺寸并打印 `PASS TODO N`，然后再进入下一项。建议至少覆盖：
+
+```text
+N = 1、2、3、4、5、7、8、9、17、257
+```
+
+需要注意，参考实现中的向量化代码不一定具备完整的尾部保护。创建练习文件时不能机械复制参考实现的边界行为，应采用：
+
+```text
+完整向量范围 → 向量化主路径
+不足向量宽度 → 安全的标量尾部路径
+```
+
+同时增加极端输入测试，例如较大的正数、较大的负数、零以及 FP16 边界附近的数值，并与 `torch.sigmoid` 比较。
+
+### 13.2 当前任务：Swish
+
+Swish 的数学定义为：
+
+```text
+swish(x) = x * sigmoid(x) = x / (1 + exp(-x))
+```
+
+它在 Sigmoid 的基础上增加了一次输入乘法，是学习简单算子融合的合适下一步。练习仍按以下顺序完成：
+
+```text
+FP32 标量
+  → FP32x4
+  → FP16 标量
+  → FP16x2
+  → FP16x8
+  → FP16x8 pack
+```
+
+重点关注：
+
+- 不要只计算 `sigmoid(x)`，最终输出还必须乘以原输入 `x`；
+- 区分 FP32 的 `expf` 与 FP16/FP16x2 的指数和算术操作；
+- 向量化主路径只能在完整的 2、4 或 8 元素范围内读写；
+- 尾部路径要覆盖不能被向量宽度整除的输入；
+- 128-bit pack 版本应先整体加载，在局部完成计算后再整体写回；
+- 每完成一个 TODO，都先通过全部边界尺寸，再开始下一项。
+
+### 13.3 推荐的完整进阶顺序
+
+```text
+Elementwise Add（已完成）
+  → ReLU（已完成）
+  → Sigmoid（已完成）
+  → Swish（进行中）
+  → GELU
+  → Reduce
+  → Softmax
+  → LayerNorm / RMSNorm
+  → 矩阵乘法
+  → FlashAttention
+```
+
+各阶段的主要学习目标如下：
+
+| 阶段 | 主要新增知识 |
+|---|---|
+| Sigmoid | 指数计算、数值范围限制、FP16 数学函数 |
+| Swish | `x * sigmoid(x)`，简单算子融合 |
+| GELU | 更复杂的激活函数与近似计算 |
+| Reduce | warp shuffle、共享内存、block reduction |
+| Softmax | max-reduce、指数、sum-reduce、归一化和数值稳定性 |
+| LayerNorm / RMSNorm | 多阶段归约、均值/方差或平方均值、融合计算 |
+| 矩阵乘法 | 分块、共享内存、访存复用和 Tensor Core 基础 |
+| FlashAttention | 矩阵乘法、在线 Softmax、共享内存与 warp 协作的综合应用 |
+
+### 13.4 为什么暂时不直接写 FlashAttention
+
+FlashAttention 不是一个独立的小技巧，而是多个基础能力的组合：
+
+- QK 矩阵乘法；
+- shared memory 分块与数据复用；
+- warp 间协作；
+- reduce；
+- 数值稳定的在线 Softmax；
+- PV 矩阵乘法；
+- 寄存器、共享内存和占用率之间的权衡。
+
+如果还没有独立完成 Reduce、Softmax 和基础矩阵乘法，直接阅读 FlashAttention 很容易停留在逐行模仿。按照上述路线逐步练习后，再进入 `kernels/flash-attn/`，会更容易理解每个设计选择解决的具体问题。
