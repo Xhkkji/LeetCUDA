@@ -19,9 +19,10 @@
 | Elementwise Add | 已完成 | FP32、FP32x4、FP16、FP16x2、FP16x8、FP16x8 pack |
 | ReLU | 已完成 | 六个 TODO、边界正确性测试和性能测试 |
 | Sigmoid | 已完成 | 六个 TODO、指数范围处理、`half2` 运算、128-bit pack 和全部边界测试 |
-| Swish | 进行中 | 已创建练习文件，下一步从 TODO 1 开始 |
+| Swish | 已完成 | 六个 TODO、融合计算、向量尾部、128-bit pack 和全部边界测试 |
+| GELU | 进行中 | 已创建练习文件，下一步从 TODO 1 开始 |
 
-最近一次进度更新：2026-10-19。Sigmoid 的六个实现已经实际运行并全部输出 `PASS`，当前练习目标切换为 Swish。
+最近一次进度更新：2026-10-23。Swish 的六个实现已经实际运行并全部输出 `PASS`，当前练习目标切换为 GELU。
 
 ## 1. 这个目录是什么
 
@@ -462,11 +463,11 @@ identifier "__builtin_dynamic_object_size" is undefined
 - [x] 能解释 FP32x4 向量化的基本思路。
 - [x] 能正确预热、同步并测量 GPU kernel。
 
-第一阶段已经结束，当前进入逐元素融合算子 Swish 的练习。
+第一阶段已经结束，Swish 练习也已完成，当前进入 GELU 的近似计算练习。
 
 ## 13. 后续算子学习路线
 
-Elementwise Add、ReLU 和 Sigmoid 已完成。当前题目是 `kernels/swish/`，暂时不要直接进入 FlashAttention。
+Elementwise Add、ReLU、Sigmoid 和 Swish 已完成。当前题目是 `kernels/gelu/`，暂时不要直接进入 FlashAttention。
 
 ### 13.1 已完成：Sigmoid
 
@@ -531,7 +532,7 @@ N = 1、2、3、4、5、7、8、9、17、257
 
 同时增加极端输入测试，例如较大的正数、较大的负数、零以及 FP16 边界附近的数值，并与 `torch.sigmoid` 比较。
 
-### 13.2 当前任务：Swish
+### 13.2 已完成：Swish
 
 Swish 的数学定义为：
 
@@ -559,14 +560,32 @@ FP32 标量
 - 128-bit pack 版本应先整体加载，在局部完成计算后再整体写回；
 - 每完成一个 TODO，都先通过全部边界尺寸，再开始下一项。
 
-### 13.3 推荐的完整进阶顺序
+### 13.3 当前任务：GELU
+
+当前练习采用 GELU 的 `tanh` 近似形式：
+
+```text
+gelu(x) ≈ 0.5*x*(1+tanh(sqrt(2/pi)*(x+0.044715*x^3)))
+```
+
+练习仍按 `FP32 → FP32x4 → FP16 → FP16x2 → FP16x8 → FP16x8 pack` 的顺序完成。重点关注：
+
+- 区分精确 `erf` 形式和本练习采用的 `tanh` 近似形式；
+- 理解三次项 `x^3` 和常量 `sqrt(2/pi)`、`0.044715` 的作用；
+- FP32 可以直接使用 `tanhf`，但 CUDA FP16 没有直接的 half `tanh`；
+- FP16 可通过 `tanh(z)=(exp(2z)-1)/(exp(2z)+1)` 练习近似计算，但误差和有效输入范围与 PyTorch 不同；
+- 保持完整向量主路径与安全标量尾部，不能照搬参考实现中的越界读取；
+- 正确性测试统一与 `torch.nn.functional.gelu(..., approximate="tanh")` 比较；
+- 128-bit pack 只负责数据搬运，GELU 的非线性计算仍需对每个元素完成。
+
+### 13.4 推荐的完整进阶顺序
 
 ```text
 Elementwise Add（已完成）
   → ReLU（已完成）
   → Sigmoid（已完成）
-  → Swish（进行中）
-  → GELU
+  → Swish（已完成）
+  → GELU（进行中）
   → Reduce
   → Softmax
   → LayerNorm / RMSNorm
@@ -587,7 +606,7 @@ Elementwise Add（已完成）
 | 矩阵乘法 | 分块、共享内存、访存复用和 Tensor Core 基础 |
 | FlashAttention | 矩阵乘法、在线 Softmax、共享内存与 warp 协作的综合应用 |
 
-### 13.4 为什么暂时不直接写 FlashAttention
+### 13.5 为什么暂时不直接写 FlashAttention
 
 FlashAttention 不是一个独立的小技巧，而是多个基础能力的组合：
 
